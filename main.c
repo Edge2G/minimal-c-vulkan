@@ -33,7 +33,11 @@ typedef struct App
     VkQueue present_queue;
     VkSurfaceKHR surface;
     VkSwapchainKHR swap_chain;
+    VkImage *swap_chain_images;
+    VkFormat swap_chain_image_format;
+    VkExtent2D swap_chain_extent;
     VkImageView *swap_chain_image_views;
+    uint32_t swap_chain_image_count;
 } App;
 
 typedef struct QueueFamilyIndices
@@ -432,11 +436,47 @@ void create_swap_chain(App *app)
         printf("Could not create swap chain...\n");
         exit(7);
     }
+
+    vkGetSwapchainImagesKHR(app->device, app->swap_chain, &image_count, NULL);
+    app->swap_chain_images = (VkImage*)malloc(sizeof(VkImage) * image_count);
+
+    vkGetSwapchainImagesKHR(app->device, app->swap_chain, &image_count, app->swap_chain_images);
+    app->swap_chain_image_count = image_count;
+
+    app->swap_chain_image_format = surface_format.format;
+    app->swap_chain_extent = extent;
 }
 
 void create_image_views(App *app)
 {
+    app->swap_chain_image_views = (VkImageView*)malloc(sizeof(VkImageView) * app->swap_chain_image_count);
 
+    printf("Image count: %d\n", app->swap_chain_image_count);
+    for (uint32_t i = 0; i < app->swap_chain_image_count; i++)
+    {
+        VkImageViewCreateInfo create_info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = app->swap_chain_images[i],
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = app->swap_chain_image_format,
+            .components.r = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .components.g = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .components.b = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .components.a = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .subresourceRange.baseMipLevel = 0,
+            .subresourceRange.levelCount = 1,
+            .subresourceRange.baseArrayLayer = 0,
+            .subresourceRange.layerCount = 1,
+        };
+        printf("Image address: %p\n", app->swap_chain_images[i]);
+
+        if(vkCreateImageView(app->device, &create_info, NULL, &app->swap_chain_image_views[i]) != VK_SUCCESS)
+        {
+            printf("Failed to create image view...\n");
+            exit(8);
+        }
+    }
 }
 
 void create_logical_device(App *app)
@@ -503,6 +543,11 @@ void main_loop(App *app)
 
 void clean_up(App *app)
 {
+    for (uint32_t i = 0; i < app->swap_chain_image_count; i++)
+    {
+        vkDestroyImageView(app->device, app->swap_chain_image_views[i], NULL);
+    }
+
     vkDestroySwapchainKHR(app->device, app->swap_chain, NULL);
     vkDestroyDevice(app->device, NULL);
     vkDestroySurfaceKHR(app->instance, app->surface, NULL);
