@@ -41,6 +41,9 @@ typedef struct App
     VkRenderPass render_pass;
     VkPipelineLayout pipeline_layout;
     VkPipeline graphics_pipeline;
+    VkFramebuffer *swapchain_framebuffers;
+    VkCommandPool commandPool;
+    VkCommandBuffer commandBuffer;
 } App;
 
 typedef struct QueueFamilyIndices
@@ -92,6 +95,10 @@ void create_image_views(App *app);
 void create_graphics_pipeline(App *app);
 VkShaderModule create_shader_module(App *app, ShaderFile *shaderfile);
 void create_render_pass(App *app);
+void create_framebuffers(App *app);
+void createCommandPool(App *app);
+void create_command_buffer(App *app); 
+void recordCommandBuffer(App *app, VkCommandBuffer commandBuffer, uint32_t imageIndex); 
 
 /* main and closing functions */
 void main_loop(App *app);
@@ -803,6 +810,119 @@ void create_render_pass(App *app)
 
 }
 
+void create_framebuffers(App *app)
+{
+    app->swapchain_framebuffers = (VkFramebuffer*)malloc(app->swap_chain_image_count * sizeof(VkFramebuffer));
+
+    for(uint32_t i = 0; i < app->swap_chain_image_count; i++)
+    {
+        VkImageView attachments[] = {
+            app->swap_chain_image_views[i]
+        };
+
+        VkFramebufferCreateInfo framebufferInfo = {};
+        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebufferInfo.renderPass = app->render_pass;
+        framebufferInfo.attachmentCount = 1;
+        framebufferInfo.pAttachments = attachments;
+        framebufferInfo.width = app->swap_chain_extent.width;
+        framebufferInfo.height = app->swap_chain_extent.height;
+        framebufferInfo.layers = 1;
+
+        if (vkCreateFramebuffer(app->device, &framebufferInfo, NULL, &app->swapchain_framebuffers[i]) != VK_SUCCESS) {
+            printf("failed to create framebuffer!");
+            exit(14);
+        }
+    }
+}
+
+void createCommandPool(App *app)
+{
+    QueueFamilyIndices queueFamilyIndices = find_queue_families(app->physical_device, app->surface);
+
+    VkCommandPoolCreateInfo poolInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = queueFamilyIndices.graphics_family,
+    };
+
+    if (vkCreateCommandPool(app->device, &poolInfo, NULL, &app->commandPool) != VK_SUCCESS)
+    {
+        printf("failed to create command pool!");
+        exit(15);
+    }
+}
+
+void create_command_buffer(App *app)
+{
+    VkCommandBufferAllocateInfo allocInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = app->commandPool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+
+    if (vkAllocateCommandBuffers(app->device, &allocInfo, &app->commandBuffer) != VK_SUCCESS) {
+        printf("failed to allocate command buffers!");
+        exit(16);
+    }
+}
+
+void recordCommandBuffer(App *app, VkCommandBuffer commandBuffer, uint32_t imageIndex)
+{
+    VkCommandBufferBeginInfo beginInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = 0, // Optional
+        .pInheritanceInfo = NULL, // Optional
+    };
+
+    if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+        printf("failed to begin recording command buffer!");
+        exit(17);
+    }
+
+    VkRenderPassBeginInfo renderPassInfo = {};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = app->render_pass;
+    renderPassInfo.framebuffer = app->swapchain_framebuffers[imageIndex];
+    renderPassInfo.renderArea.offset.x = 0;
+    renderPassInfo.renderArea.offset.y = 0;
+    renderPassInfo.renderArea.extent = app->swap_chain_extent;
+
+    VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
+    renderPassInfo.clearValueCount = 1;
+    renderPassInfo.pClearValues = &clearColor;
+
+    vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, app->graphics_pipeline);
+
+    VkViewport viewport = {};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = (float)(app->swap_chain_extent.width);
+    viewport.height = (float)(app->swap_chain_extent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+    VkRect2D scissor = {};
+    scissor.offset.x = 0;
+    scissor.offset.y = 0;
+    scissor.extent = app->swap_chain_extent;
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+
+    vkCmdEndRenderPass(commandBuffer);
+
+    if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
+    {
+        printf("failed to record command buffer!");
+        exit(18);
+    }
+}
+
 void init_vulkan(App *app)
 {
     create_vulkan_instance(app);
@@ -814,6 +934,9 @@ void init_vulkan(App *app)
     create_image_views(app);
     create_render_pass(app);
     create_graphics_pipeline(app);
+    create_framebuffers(app);
+    createCommandPool(app);
+    create_command_buffer(app);
 }
 
 void main_loop(App *app)
@@ -826,6 +949,13 @@ void main_loop(App *app)
 
 void clean_up(App *app)
 {
+    vkDestroyCommandPool(app->device, app->commandPool, NULL);
+
+    for(uint32_t i = 0; i < app->swap_chain_image_count; i++)
+    {
+        vkDestroyFramebuffer(app->device, app->swapchain_framebuffers[i], NULL);
+    }
+
     vkDestroyPipeline(app->device, app->graphics_pipeline, NULL);
     vkDestroyPipelineLayout(app->device, app->pipeline_layout, NULL);
     vkDestroyRenderPass(app->device, app->render_pass, NULL);
