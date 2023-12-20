@@ -2,7 +2,7 @@ CFLAGS = -std=c++17 -O2
 LDFLAGS = -lglfw -lvulkan -ldl -lpthread -lX11 -lXxf86vm -lXrandr -lXi
 
 Compile: main.c
-	gcc -o a.out main.c $(LDFLAGS)
+	gcc -o a.out main.c $(LDFLAGS) -g
 
 test: a.out
 	./a.out
