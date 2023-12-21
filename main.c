@@ -44,6 +44,9 @@ typedef struct App
     VkFramebuffer *swapchain_framebuffers;
     VkCommandPool commandPool;
     VkCommandBuffer commandBuffer;
+    VkSemaphore imageAvailableSemaphore;
+    VkSemaphore renderFinishedSemaphore;
+    VkFence inFlightFence;
 } App;
 
 typedef struct QueueFamilyIndices
@@ -98,7 +101,12 @@ void create_render_pass(App *app);
 void create_framebuffers(App *app);
 void createCommandPool(App *app);
 void create_command_buffer(App *app); 
-void recordCommandBuffer(App *app, VkCommandBuffer commandBuffer, uint32_t imageIndex); 
+void recordCommandBuffer(App *app, VkCommandBuffer commandBuffer, uint32_t imageIndex);
+void create_sync_objects(App *app);
+
+/* Draw functions */
+void draw_frame(App *app);
+
 
 /* main and closing functions */
 void main_loop(App *app);
@@ -674,7 +682,7 @@ void create_graphics_pipeline(App *app)
 
     if (vkCreatePipelineLayout(app->device, &pipelineLayoutInfo, NULL, &app->pipeline_layout) != VK_SUCCESS)
     {
-       printf("failed to create pipeline layout!");
+       printf("failed to create pipeline layout!\n");
        exit(11);
     }
 
@@ -699,7 +707,7 @@ void create_graphics_pipeline(App *app)
 
     if (vkCreateGraphicsPipelines(app->device, VK_NULL_HANDLE, 1, &pipelineInfo, NULL, &app->graphics_pipeline) != VK_SUCCESS)
     {
-        printf("failed to create graphics pipeline!");
+        printf("failed to create graphics pipeline!\n");
         exit(13);
     }
 
@@ -770,6 +778,7 @@ void create_logical_device(App *app)
     }
 
     vkGetDeviceQueue(app->device, indices.graphics_family, 0, &app->graphics_queue);
+    vkGetDeviceQueue(app->device, indices.graphics_family, 0, &app->present_queue);
 }
 
 void create_render_pass(App *app)
@@ -802,12 +811,22 @@ void create_render_pass(App *app)
         .pSubpasses = &subpass,
     };
 
+    VkSubpassDependency dependency = {};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcAccessMask = 0;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+    renderPassInfo.dependencyCount = 1;
+    renderPassInfo.pDependencies = &dependency;
+
     if (vkCreateRenderPass(app->device, &renderPassInfo, NULL, &app->render_pass) != VK_SUCCESS)
     {
-        printf("failed to create render pass!");
+        printf("failed to create render pass!\n");
         exit(12);
     }
-
 }
 
 void create_framebuffers(App *app)
@@ -830,7 +849,7 @@ void create_framebuffers(App *app)
         framebufferInfo.layers = 1;
 
         if (vkCreateFramebuffer(app->device, &framebufferInfo, NULL, &app->swapchain_framebuffers[i]) != VK_SUCCESS) {
-            printf("failed to create framebuffer!");
+            printf("failed to create framebuffer!\n");
             exit(14);
         }
     }
@@ -848,7 +867,7 @@ void createCommandPool(App *app)
 
     if (vkCreateCommandPool(app->device, &poolInfo, NULL, &app->commandPool) != VK_SUCCESS)
     {
-        printf("failed to create command pool!");
+        printf("failed to create command pool!\n");
         exit(15);
     }
 }
@@ -863,7 +882,7 @@ void create_command_buffer(App *app)
     };
 
     if (vkAllocateCommandBuffers(app->device, &allocInfo, &app->commandBuffer) != VK_SUCCESS) {
-        printf("failed to allocate command buffers!");
+        printf("failed to allocate command buffers!\n");
         exit(16);
     }
 }
@@ -877,7 +896,7 @@ void recordCommandBuffer(App *app, VkCommandBuffer commandBuffer, uint32_t image
     };
 
     if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
-        printf("failed to begin recording command buffer!");
+        printf("failed to begin recording command buffer!\n");
         exit(17);
     }
 
@@ -918,8 +937,26 @@ void recordCommandBuffer(App *app, VkCommandBuffer commandBuffer, uint32_t image
 
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
     {
-        printf("failed to record command buffer!");
+        printf("failed to record command buffer!\n");
         exit(18);
+    }
+}
+
+void create_sync_objects(App *app)
+{
+    VkSemaphoreCreateInfo semaphoreInfo = {};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    VkFenceCreateInfo fenceInfo = {};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+    if (vkCreateSemaphore(app->device, &semaphoreInfo, NULL, &app->imageAvailableSemaphore) != VK_SUCCESS ||
+    vkCreateSemaphore(app->device, &semaphoreInfo, NULL, &app->renderFinishedSemaphore) != VK_SUCCESS ||
+    vkCreateFence(app->device, &fenceInfo, NULL, &app->inFlightFence) != VK_SUCCESS)
+    {
+        printf("failed to create semaphores!\n");
+        exit(19);
     }
 }
 
@@ -937,6 +974,55 @@ void init_vulkan(App *app)
     create_framebuffers(app);
     createCommandPool(app);
     create_command_buffer(app);
+    create_sync_objects(app);
+}
+
+void draw_frame(App *app)
+{
+    vkWaitForFences(app->device, 1, &app->inFlightFence, VK_TRUE, UINT64_MAX);
+    vkResetFences(app->device, 1, &app->inFlightFence);
+
+    uint32_t imageIndex;
+    vkAcquireNextImageKHR(app->device, app->swap_chain, UINT64_MAX, app->imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+
+    vkResetCommandBuffer(app->commandBuffer, 0);
+    recordCommandBuffer(app, app->commandBuffer, imageIndex);
+
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+    VkSemaphore waitSemaphores[] = {app->imageAvailableSemaphore};
+    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = waitSemaphores;
+    submitInfo.pWaitDstStageMask = waitStages;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &app->commandBuffer;
+
+    VkSemaphore signalSemaphores[] = {app->renderFinishedSemaphore};
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = signalSemaphores;
+
+    if (vkQueueSubmit(app->graphics_queue, 1, &submitInfo, app->inFlightFence) != VK_SUCCESS)
+    {
+        printf("failed to submit draw command buffer!\n");
+        exit(20);
+    }
+
+    VkPresentInfoKHR presentInfo = {};
+    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = signalSemaphores;
+
+    VkSwapchainKHR swapChains[] = {app->swap_chain};
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = swapChains;
+    presentInfo.pImageIndices = &imageIndex;
+
+    presentInfo.pResults = NULL; // Optional
+
+    vkQueuePresentKHR(app->present_queue, &presentInfo);
 }
 
 void main_loop(App *app)
@@ -944,11 +1030,18 @@ void main_loop(App *app)
     while(!glfwWindowShouldClose(app->window))
     {
         glfwPollEvents();
+        draw_frame(app);
     }
+
+    vkDeviceWaitIdle(app->device);
 }
 
 void clean_up(App *app)
 {
+    vkDestroySemaphore(app->device, app->imageAvailableSemaphore, NULL);
+    vkDestroySemaphore(app->device, app->renderFinishedSemaphore, NULL);
+    vkDestroyFence(app->device, app->inFlightFence, NULL);
+
     vkDestroyCommandPool(app->device, app->commandPool, NULL);
 
     for(uint32_t i = 0; i < app->swap_chain_image_count; i++)
